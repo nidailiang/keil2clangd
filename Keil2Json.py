@@ -6,6 +6,49 @@ from pathlib import Path
 import shlex
 
 
+def resolve_with_real_case(project_root, relative_path):
+    """
+    解析路径并纠正大小写以匹配真实文件系统。
+
+    在 Windows（大小写不敏感）上，Path.resolve() 会自动纠正大小写。
+    但在 Linux（大小写敏感）上，Path.resolve() 严格保留输入的大小写，
+    导致 source/EVSE 无法匹配真实目录 source/evse。
+
+    本函数逐级遍历路径的每个组件，如果组件在文件系统中不存在，
+    则在父目录中做大小写不敏感的匹配，找到真实的目录/文件名。
+    """
+    # 先合并 project_root 和相对路径，然后分解为组件列表
+    raw_path = project_root / relative_path
+    parts = raw_path.parts  # 例如 ('/', 'root', 'code', 'main_board', 'source', 'EVSE')
+
+    current = Path(parts[0])  # 根目录，如 '/' 或 'C:\\'
+
+    for part in parts[1:]:
+        if part == '..':
+            current = current.parent
+        elif part == '.':
+            continue
+        else:
+            target = current / part
+            if target.exists():
+                current = target
+            else:
+                # 大小写不敏感匹配：在父目录中找同名但大小写不同的条目
+                found = False
+                try:
+                    for entry in current.iterdir():
+                        if entry.name.lower() == part.lower():
+                            current = entry
+                            found = True
+                            break
+                except (PermissionError, OSError):
+                    pass
+                if not found:
+                    current = target  # 确实不存在，保留原名
+
+    return str(current).replace('\\', '/')
+
+
 class CompileCommandsGenerator:
     def __init__(self, path=None, absolute=False):
         self.path = path if path else '.'
@@ -43,8 +86,8 @@ class CompileCommandsGenerator:
             if not clean_path:
                 continue
             # 构建绝对路径
-            abs_path = (project_root / clean_path).resolve()
-            absolute_include_paths.append(str(abs_path).replace('\\', '/'))
+            abs_path = resolve_with_real_case(project_root, clean_path)
+            absolute_include_paths.append(abs_path)
 
         # 处理Define中的空格
         defines = [d.strip() for d in defines if d.strip()]
@@ -57,8 +100,8 @@ class CompileCommandsGenerator:
                 if file_path_elem is not None and file_path_elem.text:
                     file_path = file_path_elem.text.strip().replace('\\', '/')
                     # 构建绝对路径
-                    abs_file_path = (project_root / file_path).resolve()
-                    source_files.append(str(abs_file_path).replace('\\', '/'))
+                    abs_file_path = resolve_with_real_case(project_root, file_path)
+                    source_files.append(abs_file_path)
 
         return absolute_include_paths, defines, source_files
 
